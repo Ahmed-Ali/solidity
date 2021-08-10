@@ -104,14 +104,10 @@ void RedundantAssignEliminator::operator()(Switch const& _switch)
 
 void RedundantAssignEliminator::operator()(FunctionDefinition const& _functionDefinition)
 {
-	std::set<YulString> outerDeclaredVariables;
-	std::set<YulString> outerReturnVariables;
-	TrackedAssignments outerAssignments;
-	ForLoopInfo forLoopInfo;
-	swap(m_declaredVariables, outerDeclaredVariables);
-	swap(m_returnVariables, outerReturnVariables);
-	swap(m_assignments, outerAssignments);
-	swap(m_forLoopInfo, forLoopInfo);
+	ScopedSaveAndRestore outerDeclaredVariables(m_declaredVariables, {});
+	ScopedSaveAndRestore outerReturnVariables(m_returnVariables, {});
+	ScopedSaveAndRestore outerAssignments(m_assignments, {});
+	ScopedSaveAndRestore forLoopInfo(m_forLoopInfo, {});
 
 	for (auto const& retParam: _functionDefinition.returnVariables)
 		m_returnVariables.insert(retParam.name);
@@ -122,17 +118,11 @@ void RedundantAssignEliminator::operator()(FunctionDefinition const& _functionDe
 		finalize(param.name, State::Unused);
 	for (auto const& retParam: _functionDefinition.returnVariables)
 		finalize(retParam.name, State::Used);
-
-	swap(m_declaredVariables, outerDeclaredVariables);
-	swap(m_returnVariables, outerReturnVariables);
-	swap(m_assignments, outerAssignments);
-	swap(m_forLoopInfo, forLoopInfo);
 }
 
 void RedundantAssignEliminator::operator()(ForLoop const& _forLoop)
 {
-	ForLoopInfo outerForLoopInfo;
-	swap(outerForLoopInfo, m_forLoopInfo);
+	ScopedSaveAndRestore outerForLoopInfo(m_forLoopInfo, {});
 	++m_forLoopNestingDepth;
 
 	// If the pre block was not empty,
@@ -190,8 +180,6 @@ void RedundantAssignEliminator::operator()(ForLoop const& _forLoop)
 	merge(m_assignments, move(m_forLoopInfo.pendingBreakStmts));
 	m_forLoopInfo.pendingBreakStmts.clear();
 
-	// Restore potential outer for-loop states.
-	swap(m_forLoopInfo, outerForLoopInfo);
 	--m_forLoopNestingDepth;
 }
 
@@ -215,15 +203,12 @@ void RedundantAssignEliminator::operator()(Leave const&)
 
 void RedundantAssignEliminator::operator()(Block const& _block)
 {
-	set<YulString> outerDeclaredVariables;
-	swap(m_declaredVariables, outerDeclaredVariables);
+	ScopedSaveAndRestore outerDeclaredVariables(m_declaredVariables, {});
 
 	ASTWalker::operator()(_block);
 
 	for (auto const& var: m_declaredVariables)
 		finalize(var, State::Unused);
-
-	swap(m_declaredVariables, outerDeclaredVariables);
 }
 
 
