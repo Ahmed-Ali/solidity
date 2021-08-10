@@ -25,6 +25,7 @@
 #include <libyul/ASTForward.h>
 #include <libyul/optimiser/ASTWalker.h>
 #include <libyul/optimiser/OptimiserStep.h>
+#include <libyul/optimiser/RedundantAssignUtils.h>
 
 #include <map>
 #include <vector>
@@ -132,36 +133,20 @@ public:
 	void operator()(Block const& _block) override;
 
 private:
-	class State
-	{
-	public:
-		enum Value { Unused, Undecided, Used };
-		State(Value _value = Undecided): m_value(_value) {}
-		inline bool operator==(State _other) const { return m_value == _other.m_value; }
-		inline bool operator!=(State _other) const { return !operator==(_other); }
-		static inline void join(State& _a, State const& _b)
-		{
-			// Using "max" works here because of the order of the values in the enum.
-			_a.m_value =  Value(std::max(int(_a.m_value), int(_b.m_value)));
-		}
-	private:
-		Value m_value = Undecided;
-	};
-
 	// TODO check that this does not cause nondeterminism!
 	// This could also be a pseudo-map from state to assignment.
-	using TrackedAssignments = std::map<YulString, std::map<Assignment const*, State>>;
+	using TrackedAssignments = std::map<YulString, std::map<Assignment const*, UseState>>;
 
 	/// Joins the assignment mapping of @a _source into @a _target according to the rules laid out
 	/// above.
 	/// Will destroy @a _source.
 	static void merge(TrackedAssignments& _target, TrackedAssignments&& _source);
 	static void merge(TrackedAssignments& _target, std::vector<TrackedAssignments>&& _source);
-	void changeUndecidedTo(YulString _variable, State _newState);
+	void changeUndecidedTo(YulString _variable, UseState _newState);
 	/// Called when a variable goes out of scope. Sets the state of all still undecided
 	/// assignments to the final state. In this case, this also applies to pending
 	/// break and continue TrackedAssignments.
-	void finalize(YulString _variable, State _finalState);
+	void finalize(YulString _variable, UseState _finalState);
 
 	Dialect const* m_dialect;
 	std::set<YulString> m_declaredVariables;
@@ -169,28 +154,8 @@ private:
 	std::set<Assignment const*> m_pendingRemovals;
 	TrackedAssignments m_assignments;
 
-	/// Working data for traversing for-loops.
-	struct ForLoopInfo
-	{
-		/// Tracked assignment states for each break statement.
-		std::vector<TrackedAssignments> pendingBreakStmts;
-		/// Tracked assignment states for each continue statement.
-		std::vector<TrackedAssignments> pendingContinueStmts;
-	};
-	ForLoopInfo m_forLoopInfo;
+	ForLoopInfo<TrackedAssignments> m_forLoopInfo;
 	size_t m_forLoopNestingDepth = 0;
-};
-
-class AssignmentRemover: public ASTModifier
-{
-public:
-	explicit AssignmentRemover(std::set<Assignment const*> const& _toRemove):
-		m_toRemove(_toRemove)
-	{}
-	void operator()(Block& _block) override;
-
-private:
-	std::set<Assignment const*> const& m_toRemove;
 };
 
 }

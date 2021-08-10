@@ -38,13 +38,13 @@ void RedundantAssignEliminator::run(OptimiserStepContext& _context, Block& _ast)
 	RedundantAssignEliminator rae{_context.dialect};
 	rae(_ast);
 
-	AssignmentRemover remover{rae.m_pendingRemovals};
+	StatementRemover remover{rae.m_pendingRemovals};
 	remover(_ast);
 }
 
 void RedundantAssignEliminator::operator()(Identifier const& _identifier)
 {
-	changeUndecidedTo(_identifier.name, State::Used);
+	changeUndecidedTo(_identifier.name, UseState::Used);
 }
 
 void RedundantAssignEliminator::operator()(VariableDeclaration const& _variableDeclaration)
@@ -59,7 +59,7 @@ void RedundantAssignEliminator::operator()(Assignment const& _assignment)
 {
 	visit(*_assignment.value);
 	for (auto const& var: _assignment.variableNames)
-		changeUndecidedTo(var.name, State::Unused);
+		changeUndecidedTo(var.name, UseState::Unused);
 
 	if (_assignment.variableNames.size() == 1)
 		// Default-construct it in "Undecided" state if it does not yet exist.
@@ -115,9 +115,9 @@ void RedundantAssignEliminator::operator()(FunctionDefinition const& _functionDe
 	(*this)(_functionDefinition.body);
 
 	for (auto const& param: _functionDefinition.parameters)
-		finalize(param.name, State::Unused);
+		finalize(param.name, UseState::Unused);
 	for (auto const& retParam: _functionDefinition.returnVariables)
-		finalize(retParam.name, State::Used);
+		finalize(retParam.name, UseState::Used);
 }
 
 void RedundantAssignEliminator::operator()(ForLoop const& _forLoop)
@@ -171,7 +171,7 @@ void RedundantAssignEliminator::operator()(ForLoop const& _forLoop)
 				auto zeroIt = zeroRuns.find(var.first);
 				if (zeroIt != zeroRuns.end() && zeroIt->second.count(assignment.first))
 					continue;
-				assignment.second = State::Value::Used;
+				assignment.second = UseState::Value::Used;
 			}
 	}
 
@@ -198,7 +198,7 @@ void RedundantAssignEliminator::operator()(Continue const&)
 void RedundantAssignEliminator::operator()(Leave const&)
 {
 	for (YulString name: m_returnVariables)
-		changeUndecidedTo(name, State::Used);
+		changeUndecidedTo(name, UseState::Used);
 }
 
 void RedundantAssignEliminator::operator()(Block const& _block)
@@ -208,45 +208,18 @@ void RedundantAssignEliminator::operator()(Block const& _block)
 	ASTWalker::operator()(_block);
 
 	for (auto const& var: m_declaredVariables)
-		finalize(var, State::Unused);
+		finalize(var, UseState::Unused);
 }
 
-
-template <class K, class V, class F>
-void joinMap(std::map<K, V>& _a, std::map<K, V>&& _b, F _conflictSolver)
-{
-	// TODO Perhaps it is better to just create a sorted list
-	// and then use insert(begin, end)
-
-	auto ita = _a.begin();
-	auto aend = _a.end();
-	auto itb = _b.begin();
-	auto bend = _b.end();
-
-	for (; itb != bend; ++ita)
-	{
-		if (ita == aend)
-			ita = _a.insert(ita, std::move(*itb++));
-		else if (ita->first < itb->first)
-			continue;
-		else if (itb->first < ita->first)
-			ita = _a.insert(ita, std::move(*itb++));
-		else
-		{
-			_conflictSolver(ita->second, std::move(itb->second));
-			++itb;
-		}
-	}
-}
 
 void RedundantAssignEliminator::merge(TrackedAssignments& _target, TrackedAssignments&& _other)
 {
-	joinMap(_target, move(_other), [](
-		map<Assignment const*, State>& _assignmentHere,
-		map<Assignment const*, State>&& _assignmentThere
+	util::joinMap(_target, move(_other), [](
+		map<Assignment const*, UseState>& _assignmentHere,
+		map<Assignment const*, UseState>&& _assignmentThere
 	)
 	{
-		return joinMap(_assignmentHere, move(_assignmentThere), State::join);
+		return util::joinMap(_assignmentHere, move(_assignmentThere), UseState::join);
 	});
 }
 
@@ -257,44 +230,35 @@ void RedundantAssignEliminator::merge(TrackedAssignments& _target, vector<Tracke
 	_source.clear();
 }
 
-void RedundantAssignEliminator::changeUndecidedTo(YulString _variable, RedundantAssignEliminator::State _newState)
+void RedundantAssignEliminator::changeUndecidedTo(YulString _variable, UseState _newState)
 {
 	for (auto& assignment: m_assignments[_variable])
-		if (assignment.second == State::Undecided)
+		if (assignment.second == UseState::Undecided)
 			assignment.second = _newState;
 }
 
-void RedundantAssignEliminator::finalize(YulString _variable, RedundantAssignEliminator::State _finalState)
+void RedundantAssignEliminator::finalize(YulString _variable, UseState _finalState)
 {
-	std::map<Assignment const*, State> assignments;
-	joinMap(assignments, std::move(m_assignments[_variable]), State::join);
+	std::map<Assignment const*, UseState> assignments;
+	util::joinMap(assignments, std::move(m_assignments[_variable]), UseState::join);
 	m_assignments.erase(_variable);
 
 	for (auto& breakAssignments: m_forLoopInfo.pendingBreakStmts)
 	{
-		joinMap(assignments, std::move(breakAssignments[_variable]), State::join);
+		util::joinMap(assignments, std::move(breakAssignments[_variable]), UseState::join);
 		breakAssignments.erase(_variable);
 	}
 	for (auto& continueAssignments: m_forLoopInfo.pendingContinueStmts)
 	{
-		joinMap(assignments, std::move(continueAssignments[_variable]), State::join);
+		util::joinMap(assignments, std::move(continueAssignments[_variable]), UseState::join);
 		continueAssignments.erase(_variable);
 	}
 
 	for (auto const& assignment: assignments)
 	{
-		State const state = assignment.second == State::Undecided ? _finalState : assignment.second;
+		UseState const state = assignment.second == UseState::Undecided ? _finalState : assignment.second;
 
-		if (state == State::Unused && SideEffectsCollector{*m_dialect, *assignment.first->value}.movable())
+		if (state == UseState::Unused && SideEffectsCollector{*m_dialect, *assignment.first->value}.movable())
 			m_pendingRemovals.insert(assignment.first);
 	}
-}
-
-void AssignmentRemover::operator()(Block& _block)
-{
-	ranges::actions::remove_if(_block.statements, [&](Statement const& _statement) -> bool {
-		return holds_alternative<Assignment>(_statement) && m_toRemove.count(&std::get<Assignment>(_statement));
-	});
-
-	ASTModifier::operator()(_block);
 }
